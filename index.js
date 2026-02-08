@@ -49,6 +49,38 @@ const SECRET = NC_SECRET || "";
 // Check for flags
 const FORCE_MODE = process.argv.includes("--force");
 const DELETE_ALL_MODE = process.argv.includes("--delete-all-thumbs");
+const HELP_MODE = process.argv.includes("--help") || process.argv.includes("-h");
+
+if (HELP_MODE) {
+    console.log(`
+🖼️  Localthumbs CLI - Usage Guide
+
+Commands:
+  node index.js                      Run a standard scan and upload missing thumbnails.
+  node index.js --force              Ignore all caches and re-process all files.
+  node index.js --delete-all-thumbs  Remove all remote thumbnails and clear local caches.
+  node index.js --help               Show this help message.
+
+Environment Variables (set in .env):
+  NC_URL             Nextcloud WebDAV URL (ending in /remote.php/dav/files/user/)
+  NC_USER            Nextcloud Username
+  NC_PASS            Nextcloud Password or App Token
+  NC_SECRET          (Optional) API Secret matching the server configuration
+  NC_STRICT_TLS      Set to "true" to enable strict SSL verification (default: false)
+  
+  IO_CONCURRENCY     Simultaneous downloads/checks (default: 2)
+  FFMPEG_THREADS     Threads per FFmpeg process (default: Cores - 1)
+  MAX_VIDEO_SIZE_MB  Maximum file size for full download fallback (default: 3000)
+  SCAN_INTERVAL_DAYS Days to skip rescanning unchanged folders (default: 7)
+
+Paths:
+  TEMP_DIR           Directory for temporary processing (default: ./tmp_thumbs)
+  FOLDER_CACHE       Path to folder mtime cache (default: ./folder_cache.csv)
+  THUMB_CACHE        Path to successful thumb cache (default: ./thumb_cache.csv)
+  FAIL_CACHE         Path to failed file cache (default: ./fail_cache.csv)
+    `);
+    process.exit(0);
+}
 
 if (FORCE_MODE) {
     console.log("!!! FORCE MODE ENABLED: Ignoring caches and re-processing all files !!!");
@@ -58,7 +90,6 @@ if (DELETE_ALL_MODE) {
     console.log("!!! DELETE ALL MODE ENABLED: Removing all remote thumbnails and clearing local caches !!!");
 }
 
-// Setup Paths
 const urlObj = new URL(NC_URL);
 const BASE_URL = `${urlObj.protocol}//${urlObj.host}`;
 const NC_ROOT = NC_URL.split('/remote.php')[0];

@@ -1,4 +1,4 @@
-# 🧠 LocalNCThumbnailer: The Brains of the Operation (v1.0.1)
+# 🧠 Localthumbs CLI: The Brains of the Operation (v1.0.1)
 
 Your Nextcloud hoster is stingy with CPU cycles? Fine. We'll use your local machine's raw power to crunch those videos into beautiful thumbnails.
 
@@ -31,7 +31,15 @@ Your Nextcloud hoster is stingy with CPU cycles? Fine. We'll use your local mach
     -   `NC_SECRET`: Must match the `api_secret` set on the Nextcloud server.
     -   `IO_CONCURRENCY`: Number of simultaneous downloads (default 2).
 3.  **Run**: `node index.js`
-4.  **Run (Force Refresh)**: `node index.js --force` (Ignores all caches and overwrites existing thumbnails).
-5.  **Run (Delete All)**: `node index.js --delete-all-thumbs` (Removes all thumbnails from the server and wipes local caches).
+4.  **Run (Help)**: `node index.js --help` (Show all available options and environment variables).
+5.  **Run (Force Refresh)**: `node index.js --force` (Ignores all caches and overwrites existing thumbnails).
+6.  **Run (Delete All)**: `node index.js --delete-all-thumbs` (Removes all thumbnails from the server and wipes local caches).
+
+## 📦 Ubuntu/Debian Packaging
+You can package this app as a `.deb` to run it as a systemd service:
+1.  Run the build script: `./build-deb.sh`
+2.  Install the package: `sudo dpkg -i localthumbs-cli_1.0.1_all.deb`
+3.  Configure your credentials in `/etc/localthumbs-cli/localthumbs-cli.env`.
+4.  Start the service: `sudo systemctl enable --now localthumbs-cli`
 
 **Note:** This worker requires the [nc-local-thumbnailer](https://github.com/hersche/nc-local-thumbnailer) app to be installed and enabled on your Nextcloud instance.
