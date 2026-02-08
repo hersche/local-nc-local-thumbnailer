@@ -46,10 +46,16 @@ const stats = {
 const STRICT_TLS = NC_STRICT_TLS === "true";
 const SECRET = NC_SECRET || "";
 
-// Check for force flag
+// Check for flags
 const FORCE_MODE = process.argv.includes("--force");
+const DELETE_ALL_MODE = process.argv.includes("--delete-all-thumbs");
+
 if (FORCE_MODE) {
     console.log("!!! FORCE MODE ENABLED: Ignoring caches and re-processing all files !!!");
+}
+
+if (DELETE_ALL_MODE) {
+    console.log("!!! DELETE ALL MODE ENABLED: Removing all remote thumbnails and clearing local caches !!!");
 }
 
 // Setup Paths
@@ -513,6 +519,26 @@ async function processFolder(directory = "/") {
 (async () => {
     if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
     await checkCapabilities();
+
+    if (DELETE_ALL_MODE) {
+        try {
+            console.log("[▶] Requesting server-side thumbnail deletion...");
+            const res = await client.post(`${API_BASE}/deleteAll`);
+            console.log(`[✔] Server response: ${res.data.message}`);
+
+            console.log("[▶] Clearing local caches...");
+            if (fs.existsSync(FOLDER_CACHE)) fs.unlinkSync(FOLDER_CACHE);
+            if (fs.existsSync(THUMB_CACHE)) fs.unlinkSync(THUMB_CACHE);
+            if (fs.existsSync(FAIL_CACHE)) fs.unlinkSync(FAIL_CACHE);
+            console.log("[✔] Local caches cleared.");
+            
+            process.exit(0);
+        } catch (e) {
+            console.error(`[✘] Delete failed: ${e.message}`);
+            process.exit(1);
+        }
+    }
+
     try { 
         await processFolder("/"); 
         // Wait for all queued jobs to finish

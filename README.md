@@ -32,5 +32,6 @@ Your Nextcloud hoster is stingy with CPU cycles? Fine. We'll use your local mach
     -   `IO_CONCURRENCY`: Number of simultaneous downloads (default 2).
 3.  **Run**: `node index.js`
 4.  **Run (Force Refresh)**: `node index.js --force` (Ignores all caches and overwrites existing thumbnails).
+5.  **Run (Delete All)**: `node index.js --delete-all-thumbs` (Removes all thumbnails from the server and wipes local caches).
 
 **Note:** This worker requires the [nc-local-thumbnailer](https://github.com/hersche/nc-local-thumbnailer) app to be installed and enabled on your Nextcloud instance.
