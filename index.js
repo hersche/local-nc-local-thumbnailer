@@ -26,7 +26,12 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
-const { NC_URL, NC_USER, NC_PASS, TEMP_DIR, FOLDER_CACHE, THUMB_CACHE, FAIL_CACHE, SCAN_INTERVAL_DAYS, FFMPEG_THREADS, MAX_VIDEO_SIZE_MB } = process.env;
+const { 
+    NC_URL, NC_USER, NC_PASS, NC_SECRET, NC_STRICT_TLS,
+    TEMP_DIR, FOLDER_CACHE, THUMB_CACHE, FAIL_CACHE, 
+    SCAN_INTERVAL_DAYS, FFMPEG_THREADS, MAX_VIDEO_SIZE_MB,
+    IO_CONCURRENCY
+} = process.env;
 
 // Stats Tracking
 const stats = {
@@ -37,6 +42,9 @@ const stats = {
     skippedExists: 0,
     skippedCache: 0
 };
+
+const STRICT_TLS = NC_STRICT_TLS === "true";
+const SECRET = NC_SECRET || "";
 
 // Check for force flag
 const FORCE_MODE = process.argv.includes("--force");
@@ -55,10 +63,15 @@ const MAX_SIZE_BYTES = (parseInt(MAX_VIDEO_SIZE_MB) || 3000) * 1024 * 1024;
 console.log(`API Base: ${API_BASE}`);
 console.log(`DAV Prefix: ${DAV_PATH_PREFIX}`);
 console.log(`Max Video Size: ${(MAX_SIZE_BYTES / 1024 / 1024).toFixed(0)} MB`);
+console.log(`Strict TLS: ${STRICT_TLS}`);
 
 // Connection Agents with Keep-Alive
-const httpAgent = new http.Agent({ keepAlive: true });
-const httpsAgent = new https.Agent({ keepAlive: true });
+const agentOptions = { 
+    keepAlive: true,
+    rejectUnauthorized: STRICT_TLS
+};
+const httpAgent = new http.Agent(agentOptions);
+const httpsAgent = new https.Agent(agentOptions);
 
 const dav = createClient(NC_URL, {
     username: NC_USER, 
@@ -75,7 +88,10 @@ const COOLDOWN_MS = (parseInt(SCAN_INTERVAL_DAYS) || 7) * 24 * 60 * 60 * 1000;
 // Axios for API
 const client = axios.create({
     auth: { username: NC_USER, password: NC_PASS },
-    headers: { 'OCS-APIRequest': 'true' },
+    headers: { 
+        'OCS-APIRequest': 'true',
+        'X-Localthumbs-Secret': SECRET
+    },
     maxBodyLength: Infinity,
     maxContentLength: Infinity,
     httpAgent: httpAgent,
@@ -133,7 +149,9 @@ class JobQueue {
         }
     }
 }
-const jobQueue = new JobQueue(1);
+// IO_CONCURRENCY for downloads/webdav, FFMPEG_CONCURRENCY strictly 1
+const ioQueue = new JobQueue(parseInt(IO_CONCURRENCY) || 2);
+const ffmpegQueue = new JobQueue(1);
 
 const getHash = (str) => crypto.createHash("md5").update(str).digest("hex").substring(0, 8);
 const getRelativePath = (fullPath) => {
@@ -145,12 +163,30 @@ const getRelativePath = (fullPath) => {
     return rel;
 }
 
+// --- CAPABILITIES ---
+let capabilities = { batch_exists: false };
+async function checkCapabilities() {
+    try {
+        const res = await client.get(`${NC_ROOT}/ocs/v2.php/cloud/capabilities?format=json`);
+        const data = res.data.ocs.data.capabilities.localthumbs;
+        if (data) {
+            capabilities = { ...capabilities, ...data.features };
+            console.log(`[i] Remote capabilities detected:`, capabilities);
+        }
+    } catch (e) {
+        console.warn(`[!] Failed to check capabilities: ${e.message}`);
+    }
+}
+
 // --- CACHE LOADERS ---
 
-const folderCache = new Map();
+const folderCache = new Map(); // path -> { ts, mtime }
 if (fs.existsSync(FOLDER_CACHE)) {
     fs.readFileSync(FOLDER_CACHE, "utf-8").split("\n").forEach(l => {
-        if (l.includes(',')) { const [p, ts] = l.split(","); folderCache.set(p, parseInt(ts)); }
+        if (l.includes(',')) { 
+            const [p, ts, m] = l.split(","); 
+            folderCache.set(p, { ts: parseInt(ts), mtime: m || "" }); 
+        }
     });
 }
 
@@ -166,9 +202,9 @@ if (fs.existsSync(FAIL_CACHE)) {
 
 // --- CACHE WRITERS ---
 
-function updateFolderCache(p, ts) {
-    folderCache.set(p, ts);
-    fs.writeFileSync(FOLDER_CACHE, Array.from(folderCache.entries()).map(([k, v]) => `${k},${v}`).join("\n"));
+function updateFolderCache(p, ts, mtime) {
+    folderCache.set(p, { ts, mtime });
+    fs.writeFileSync(FOLDER_CACHE, Array.from(folderCache.entries()).map(([k, v]) => `${k},${v.ts},${v.mtime}`).join("\n"));
 }
 
 function markDone(p) {
@@ -193,6 +229,24 @@ async function checkRemoteExists(relPath) {
     }
 }
 
+async function checkBatchRemoteExists(relPaths) {
+    if (!capabilities.batch_exists) {
+        const results = {};
+        for (const p of relPaths) {
+            results[p] = await checkRemoteExists(p);
+        }
+        return results;
+    }
+    try {
+        const res = await client.post(`${API_BASE}/batch_exists`, { paths: relPaths });
+        if (res.data.status === 'success') return res.data.results;
+        throw new Error(res.data.message);
+    } catch (e) {
+        console.error(`Error in batch check: ${e.message}`);
+        return {};
+    }
+}
+
 async function uploadThumbnail(relPath, thumbPath) {
     const form = new FormData();
     form.append('path', relPath);
@@ -210,7 +264,22 @@ async function processFolder(directory = "/") {
     const relDir = getRelativePath(directory) || "/";
     const now = Date.now();
     
-    if (!FORCE_MODE && folderCache.has(relDir) && (now - folderCache.get(relDir) < COOLDOWN_MS)) return false;
+    // Check cache with mtime
+    let dirStats;
+    try {
+        dirStats = await dav.stat(relDir);
+    } catch (e) {
+        console.error(`!! WebDAV Stat Error: ${relDir} - ${e.message}`);
+        return false;
+    }
+
+    if (!FORCE_MODE && folderCache.has(relDir)) {
+        const cached = folderCache.get(relDir);
+        if (cached.mtime === dirStats.lastmod && (now - cached.ts < COOLDOWN_MS)) {
+            // console.log(`[Skip] Folder unchanged: ${relDir}`);
+            return false;
+        }
+    }
 
     console.log(`Scanning: ${relDir}`);
     let items = [];
@@ -222,6 +291,7 @@ async function processFolder(directory = "/") {
     }
 
     let mediaInTree = false;
+    const videosToProcess = [];
 
     for (const item of items) {
         if (item.type === "directory") {
@@ -240,22 +310,32 @@ async function processFolder(directory = "/") {
                     continue;
                 }
                 if (failCache.has(relPath)) {
-                    console.log(`[Skip] Previously failed: ${relPath}`);
+                    // console.log(`[Skip] Previously failed: ${relPath}`);
                     stats.skippedCache++;
                     continue;
                 }
             }
-            
-            await jobQueue.add(async () => {
-                if (!FORCE_MODE) {
-                    if (await checkRemoteExists(relPath)) {
-                         console.log(`[Skip] Already exists on server: ${relPath}`);
-                         markDone(relPath);
-                         stats.skippedExists++;
-                         return;
-                    }
-                }
+            videosToProcess.push(item);
+        }
+    }
 
+    // Batch existence check
+    if (videosToProcess.length > 0) {
+        const pathsToCheck = videosToProcess.map(v => getRelativePath(v.filename));
+        const remoteResults = await checkBatchRemoteExists(pathsToCheck);
+
+        for (const item of videosToProcess) {
+            const relPath = getRelativePath(item.filename);
+            if (!FORCE_MODE && remoteResults[relPath]) {
+                console.log(`[Skip] Already exists on server: ${relPath}`);
+                markDone(relPath);
+                stats.skippedExists++;
+                continue;
+            }
+
+            // Add to IO Queue
+            ioQueue.add(async () => {
+                const ext = path.extname(item.filename).toLowerCase();
                 const fileHash = getHash(item.filename);
                 const localVid = path.join(TEMP_DIR, `v_${fileHash}${ext}`);
                 const localThumb = path.join(TEMP_DIR, `t_${fileHash}.jpg`);
@@ -266,55 +346,43 @@ async function processFolder(directory = "/") {
                     try {
                         console.log(`[▶] Attempt 1: Remote Stream (Efficient) for ${relPath}`);
                         
-                                                // Properly encode the path for the URL
+                        const pathEncoded = item.filename.split('/').map(encodeURIComponent).join('/');
+                        const fileUrl = new URL(pathEncoded.startsWith('/') ? pathEncoded.substring(1) : pathEncoded, NC_URL).href;
+                        const authHeader = "Basic " + Buffer.from(`${NC_USER}:${NC_PASS}`).toString("base64");
                         
-                                                const pathEncoded = item.filename.split('/').map(encodeURIComponent).join('/');
-                        
-                                                
-                        
-                                                // Use NC_URL as base to ensure remote.php/... prefix is included correctly
-                        
-                                                const fileUrl = new URL(pathEncoded.startsWith('/') ? pathEncoded.substring(1) : pathEncoded, NC_URL).href;
-                        
-                                                
-                        
-                                                const authHeader = "Basic " + Buffer.from(`${NC_USER}:${NC_PASS}`).toString("base64");
-                        
-                        // Probe using spawn (no shell, safer for special chars in auth header/url)
+                        // Probe using spawn - Tuned for remote streams
                         const args = [
                             '-v', 'quiet',
                             '-print_format', 'json',
                             '-show_format',
-                            '-tls_verify', '0',
+                            '-analyzeduration', '20M',
+                            '-probesize', '20M',
+                            '-tls_verify', STRICT_TLS ? '1' : '0',
                             '-headers', `Authorization: ${authHeader}\r\n`,
                             fileUrl
                         ];
 
-                        // Debug: Print probe command (masking auth)
-                        // console.log(`[Debug] Probing: ffprobe ${args.map(a => a.includes('Authorization') ? 'Authorization: ***' : a).join(' ')}`);
-
-                        const stdout = await new Promise((resolve, reject) => {
+                        const stdout = await ffmpegQueue.add(() => new Promise((resolve, reject) => {
                             const proc = spawn('ffprobe', args);
                             let out = '', err = '';
                             proc.stdout.on('data', d => out += d);
                             proc.stderr.on('data', d => err += d);
                             proc.on('close', code => {
                                 if (code === 0) resolve(out);
-                                else reject(new Error(`Exit code ${code}. Stderr: ${err} Stdout: ${out}`));
+                                else reject(new Error(`Exit code ${code}.`));
                             });
                             proc.on('error', reject);
-                        });
+                        }));
                         
                         const metadata = JSON.parse(stdout);
-                        if (!metadata.format) throw new Error("No format detected in ffprobe output");
+                        if (!metadata.format) throw new Error("No format detected");
                         const duration = parseFloat(metadata.format.duration || 0);
 
-                        await generateThumbnail(fileUrl, duration, localThumb, true, authHeader);
+                        // FFmpeg execution must be sequential
+                        await ffmpegQueue.add(() => generateThumbnail(fileUrl, duration, localThumb, true, authHeader));
                         return; // Success!
                     } catch (err) {
-                        // Clean up error message to be concise
-                        const msg = err.message.replace(/\n/g, ' ').substring(0, 200);
-                        console.log(`[!] Remote stream failed (${msg}). Falling back to partial download...`);
+                        console.log(`[!] Remote stream failed (${err.message}). Falling back...`);
                     }
 
                     // Stage 2: Partial Download (100MB)
@@ -323,16 +391,16 @@ async function processFolder(directory = "/") {
                         const MAX_BYTES = 100 * 1024 * 1024;
                         await attemptDownload(item.filename, localVid, { range: { start: 0, end: MAX_BYTES } });
                         
-                        const duration = await getLocalDuration(localVid); // Will fail if moov is missing
-                        await generateThumbnail(localVid, duration, localThumb, false);
+                        const duration = await ffmpegQueue.add(() => getLocalDuration(localVid)); 
+                        await ffmpegQueue.add(() => generateThumbnail(localVid, duration, localThumb, false));
                         return; // Success!
                     } catch (err) {
-                        console.log(`[!] Partial processing failed (${err.message}). Checking size for full download...`);
+                        console.log(`[!] Partial processing failed (${err.message}). Falling back...`);
                     }
 
                     // Stage 3: Full Download (Last Resort)
                     if (item.size > MAX_SIZE_BYTES) {
-                        console.log(`[Skip] Full file too large for fallback (${(item.size / 1024 / 1024).toFixed(2)} MB): ${relPath}`);
+                        console.log(`[Skip] Too large for fallback (${(item.size / 1024 / 1024).toFixed(2)} MB): ${relPath}`);
                         stats.skippedSize++;
                         stats.skippedSizeList.push(`${relPath} (${(item.size / 1024 / 1024).toFixed(2)} MB)`);
                         return;
@@ -340,8 +408,8 @@ async function processFolder(directory = "/") {
 
                     console.log(`[▶] Attempt 3: Full Download for ${relPath}`);
                     await attemptDownload(item.filename, localVid, {});
-                    const duration = await getLocalDuration(localVid);
-                    await generateThumbnail(localVid, duration, localThumb, false);
+                    const duration = await ffmpegQueue.add(() => getLocalDuration(localVid));
+                    await ffmpegQueue.add(() => generateThumbnail(localVid, duration, localThumb, false));
                 };
 
                 // --- Helpers for Process ---
@@ -349,29 +417,24 @@ async function processFolder(directory = "/") {
                 const attemptDownload = async (src, dest, options, retries = 5) => {
                     for (let i = 0; i < retries; i++) {
                         try {
-                            if (i > 0) console.log(`[⬇] Attempt ${i+1}/${retries} starting for ${relPath}...`);
                             const downloadStream = dav.createReadStream(src, options);
                             let downloadedBytes = 0;
                             let lastLogged = 0;
                             const progressMonitor = new Transform({
                                 transform(chunk, encoding, callback) {
                                     downloadedBytes += chunk.length;
-                                    if ((downloadedBytes - lastLogged) > (50 * 1024 * 1024)) {
-                                        const mb = (downloadedBytes / 1024 / 1024).toFixed(2);
-                                        process.stdout.write(`\r[⬇] Downloading... ${mb} MB`);
+                                    if ((downloadedBytes - lastLogged) > (10 * 1024 * 1024)) {
+                                        // Silent progress to avoid log noise in parallel
                                         lastLogged = downloadedBytes;
                                     }
                                     callback(null, chunk);
                                 }
                             });
                             await pipeline(downloadStream, progressMonitor, fs.createWriteStream(dest));
-                            process.stdout.write("\n");
                             return;
                         } catch (e) {
-                            process.stdout.write("\n");
                             if (i === retries - 1) throw e;
-                            const delay = (i + 1) * 5000;
-                            await new Promise(r => setTimeout(r, delay));
+                            await new Promise(r => setTimeout(r, (i + 1) * 5000));
                         }
                     }
                 };
@@ -396,14 +459,12 @@ async function processFolder(directory = "/") {
                         else if (duration > 5) time = 5;
                         else time = Math.max(0, duration * 0.2);
 
-                        console.log(`[i] Video duration: ${duration}s, taking thumb at ${time}s`);
-
                         const cmd = ffmpeg(input);
                         
                         if (isRemote && authHeader) {
                             cmd.inputOptions([
                                 '-headers', `Authorization: ${authHeader}\r\n`,
-                                '-tls_verify', '0',
+                                '-tls_verify', STRICT_TLS ? '1' : '0',
                                 `-threads ${THREAD_COUNT}`
                             ]);
                         } else {
@@ -428,11 +489,10 @@ async function processFolder(directory = "/") {
                     await processVideo();
 
                     if (fs.existsSync(localThumb)) {
-                            console.log(`[↑] Uploading thumb for: ${relPath}`);
+                            console.log(`[↑] Uploading thumb: ${relPath}`);
                             await uploadThumbnail(relPath, localThumb);
                             markDone(relPath);
                             stats.uploaded++;
-                            console.log(`[✔] Success: ${relPath}`);
                     }
                 } catch (err) {
                     console.error(`[✘] Failed for ${relPath}: ${err.message}`);
@@ -446,14 +506,19 @@ async function processFolder(directory = "/") {
         }
     }
 
-    if (!mediaInTree) updateFolderCache(relDir, now);
+    updateFolderCache(relDir, now, dirStats.lastmod);
     return mediaInTree;
 }
 
 (async () => {
     if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
+    await checkCapabilities();
     try { 
         await processFolder("/"); 
+        // Wait for all queued jobs to finish
+        while (ioQueue.running > 0 || ioQueue.queue.length > 0 || ffmpegQueue.running > 0 || ffmpegQueue.queue.length > 0) {
+            await new Promise(r => setTimeout(r, 1000));
+        }
         console.log("\n" + "=".repeat(30));
         console.log("🏁 Scan Complete");
         console.log("=".repeat(30));

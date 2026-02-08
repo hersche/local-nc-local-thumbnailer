@@ -1,7 +1,7 @@
 {
   "name": "local-nc-thumbnailer",
-  "version": "1.0.0",
-  "description": "Local thumbnail generator for Nextcloud",
+  "version": "1.0.1",
+  "description": "Local thumbnail generator for Nextcloud. Part of the LocalNCThumbnailer suite. More info: https://github.com/hersche/local-nc-local-thumbnailer/ and https://github.com/hersche/nc-local-thumbnailer/",
   "main": "index.js",
   "type": "module",
   "scripts": {
