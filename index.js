@@ -5,7 +5,20 @@ import path from "path";
 import crypto from "crypto";
 import axios from "axios";
 import FormData from "form-data";
-import "dotenv/config";
+import dotenv from "dotenv";
+import { resolve } from "path";
+
+const envFlagIndex = process.argv.indexOf("--env");
+const envFile = envFlagIndex !== -1 ? process.argv[envFlagIndex + 1] : ".env";
+const envPath = resolve(process.cwd(), envFile);
+const envResult = dotenv.config({ path: envPath });
+
+if (envResult.error) {
+    console.error(`[✘] Failed to load env file: ${envPath}`);
+    console.error(envResult.error.message);
+    process.exit(1);
+}
+console.log(`[✔] Loaded env: ${envPath}`);
 import { pipeline } from "stream/promises";
 import os from "os";
 import http from "http";
