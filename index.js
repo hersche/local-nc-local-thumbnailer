@@ -5,12 +5,21 @@ import path from "path";
 import crypto from "crypto";
 import axios from "axios";
 import FormData from "form-data";
+import { parseArgs } from "node:util";
 import dotenv from "dotenv";
-import { resolve } from "path";
+import { resolve } from "node:path";
 
-const envFlagIndex = process.argv.indexOf("--env");
-const envFile = envFlagIndex !== -1 ? process.argv[envFlagIndex + 1] : ".env";
-const envPath = resolve(process.cwd(), envFile);
+const { values } = parseArgs({
+    options: {
+        env: {
+            type: "string",
+            default: ".env",
+        },
+    },
+    strict: false,
+});
+
+const envPath = resolve(process.cwd(), values.env);
 const envResult = dotenv.config({ path: envPath });
 
 if (envResult.error) {
