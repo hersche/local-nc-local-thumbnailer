@@ -5,7 +5,29 @@ import path from "path";
 import crypto from "crypto";
 import axios from "axios";
 import FormData from "form-data";
-import "dotenv/config";
+import { parseArgs } from "node:util";
+import dotenv from "dotenv";
+import { resolve } from "node:path";
+
+const { values } = parseArgs({
+    options: {
+        env: {
+            type: "string",
+            default: ".env",
+        },
+    },
+    strict: false,
+});
+
+const envPath = resolve(process.cwd(), values.env);
+const envResult = dotenv.config({ path: envPath });
+
+if (envResult.error) {
+    console.error(`[✘] Failed to load env file: ${envPath}`);
+    console.error(envResult.error.message);
+    process.exit(1);
+}
+console.log(`[✔] Loaded env: ${envPath}`);
 import { pipeline } from "stream/promises";
 import os from "os";
 import http from "http";
