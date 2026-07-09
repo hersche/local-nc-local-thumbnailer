@@ -2,7 +2,7 @@
 set -e
 
 APP_NAME="localthumbs-cli"
-VERSION="1.0.1"
+VERSION="1.1.0"
 BUILD_DIR="packaging/debian"
 PACKAGE_NAME="${APP_NAME}_${VERSION}_all.deb"
 
@@ -12,7 +12,8 @@ echo "Building $PACKAGE_NAME..."
 cd "$(dirname "$0")"
 
 # Clean previous build artifacts in the lib folder
-rm -rf $BUILD_DIR/usr/lib/$APP_NAME/*
+rm -rf $BUILD_DIR/usr/lib/$APP_NAME
+mkdir -p $BUILD_DIR/usr/lib/$APP_NAME $BUILD_DIR/usr/share/$APP_NAME
 
 # Copy app files
 echo "Copying application files..."
@@ -32,10 +33,11 @@ echo "Setting permissions..."
 chmod 755 $BUILD_DIR/DEBIAN/postinst
 chmod 755 $BUILD_DIR/usr/bin/$APP_NAME
 chmod 644 $BUILD_DIR/lib/systemd/system/$APP_NAME.service
+chmod 644 $BUILD_DIR/lib/systemd/system/$APP_NAME.timer
 
 # Build the package
 echo "Running dpkg-deb..."
-dpkg-deb --build $BUILD_DIR $PACKAGE_NAME
+dpkg-deb --root-owner-group --build $BUILD_DIR $PACKAGE_NAME
 
 echo "Success! Package created: $PACKAGE_NAME"
 echo "To install: sudo dpkg -i $PACKAGE_NAME"

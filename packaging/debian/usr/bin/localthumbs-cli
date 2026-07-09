@@ -1,0 +1,6 @@
+#!/bin/sh
+# Runs the worker from its state directory so the relative cache/temp paths
+# from the env file land in /var/lib/localthumbs-cli.
+# Manual runs: sudo -u localthumbs localthumbs-cli [--force|--retry-failed|...]
+cd /var/lib/localthumbs-cli || exit 1
+exec node /usr/lib/localthumbs-cli/index.js --env /etc/localthumbs-cli/localthumbs-cli.env "$@"

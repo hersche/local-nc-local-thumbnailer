@@ -1,0 +1,33 @@
+#!/bin/sh
+set -e
+
+APP_NAME="localthumbs-cli"
+CONF_DIR="/etc/$APP_NAME"
+CONF_FILE="$CONF_DIR/$APP_NAME.env"
+STATE_DIR="/var/lib/$APP_NAME"
+
+if ! getent passwd localthumbs >/dev/null; then
+    adduser --system --group --home "$STATE_DIR" --no-create-home localthumbs
+fi
+
+mkdir -p "$STATE_DIR"
+chown localthumbs:localthumbs "$STATE_DIR"
+
+mkdir -p "$CONF_DIR"
+if [ ! -f "$CONF_FILE" ]; then
+    cp "/usr/share/$APP_NAME/$APP_NAME.env.example" "$CONF_FILE"
+fi
+# The env file contains Nextcloud credentials
+chown root:localthumbs "$CONF_FILE"
+chmod 640 "$CONF_FILE"
+
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload || true
+fi
+
+echo "localthumbs-cli installed."
+echo "  1. Configure $CONF_FILE (multi-account: set ACCOUNTS_DIR=$CONF_DIR/accounts)"
+echo "  2. Enable the daily run: sudo systemctl enable --now $APP_NAME.timer"
+echo "  3. Or run once manually: sudo systemctl start $APP_NAME.service"
+
+exit 0

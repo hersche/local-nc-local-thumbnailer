@@ -1,0 +1,14 @@
+[Unit]
+Description=Localthumbs CLI - generate Nextcloud video thumbnails
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=localthumbs
+Group=localthumbs
+WorkingDirectory=/var/lib/localthumbs-cli
+ExecStart=/usr/bin/localthumbs-cli
+# Thumbnailing is background work — don't compete with interactive tasks
+Nice=10
+IOSchedulingClass=idle

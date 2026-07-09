@@ -1,6 +1,10 @@
 node_modules/
 .env*
+!.env.example
 tmp_thumbs/
+cache/
 *.csv
+folder_cache.json
 packaging/debian/usr/lib/localthumbs-cli/
+packaging/debian/usr/share/localthumbs-cli/
 *.deb

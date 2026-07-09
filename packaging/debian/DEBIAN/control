@@ -1,0 +1,11 @@
+Package: localthumbs-cli
+Version: 1.1.0
+Section: utils
+Priority: optional
+Architecture: all
+Depends: nodejs (>= 18), ffmpeg
+Maintainer: hersche <vinzenz.hersche@gmail.com>
+Description: Local thumbnail generator worker for Nextcloud
+ Scans a Nextcloud instance via WebDAV, generates video thumbnails
+ locally with FFmpeg and uploads them to the localthumbs Nextcloud
+ app. Supports multiple Nextcloud accounts with separate caches.
