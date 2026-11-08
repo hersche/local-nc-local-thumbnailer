@@ -1,6 +1,6 @@
 {
   "name": "localthumbs-cli",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Local thumbnail generator for Nextcloud. Part of the LocalNCThumbnailer suite. More info: https://github.com/hersche/local-nc-local-thumbnailer/ and https://github.com/hersche/nc-local-thumbnailer/",
   "main": "index.js",
   "type": "module",

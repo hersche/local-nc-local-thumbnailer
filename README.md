@@ -1,4 +1,4 @@
-# 🧠 Localthumbs CLI: The Brains of the Operation (v1.1.0)
+# 🧠 Localthumbs CLI: The Brains of the Operation (v1.1.1)
 
 Your Nextcloud hoster is stingy with CPU cycles? Fine. We'll use your local machine's raw power to crunch those videos into beautiful thumbnails.
 
@@ -61,11 +61,27 @@ Accounts are processed one after another; each account gets its own cache files 
 ## 📦 Ubuntu/Debian Packaging
 You can package this app as a `.deb` that runs the scan on a daily systemd timer:
 1.  Run the build script: `./build-deb.sh`
-2.  Install the package: `sudo dpkg -i localthumbs-cli_1.1.0_all.deb`
+2.  Install the package: `sudo dpkg -i localthumbs-cli_1.1.1_all.deb`
 3.  Configure your credentials in `/etc/localthumbs-cli/localthumbs-cli.env` (multi-account: set `ACCOUNTS_DIR=/etc/localthumbs-cli/accounts`).
 4.  Enable the daily run: `sudo systemctl enable --now localthumbs-cli.timer`
 
-The worker runs as the dedicated `localthumbs` system user with caches under `/var/lib/localthumbs-cli`. Run it once immediately with `sudo systemctl start localthumbs-cli.service`, or manually with flags via `sudo -u localthumbs localthumbs-cli --retry-failed`. To change the schedule, override `OnCalendar` with `sudo systemctl edit localthumbs-cli.timer`.
+The worker runs as the dedicated `localthumbs` system user with caches under `/var/lib/localthumbs-cli`. Run it once immediately with `sudo systemctl start localthumbs-cli.service`, or manually with flags via `sudo -u localthumbs localthumbs-cli --retry-failed`. To change the schedule, override `OnCalendar` with `sudo systemctl edit localthumbs-cli.timer`, e.g. four runs a day:
+
+```
+[Timer]
+OnCalendar=
+OnCalendar=*-*-* 00,06,12,18:00:00
+```
+
+**Node.js from nvm/nodesource**: the package only *recommends* Debian's `nodejs`, so it also installs when Node comes from elsewhere — it just needs a `node` on the service's `PATH` (e.g. a `/usr/bin/node` symlink). If that Node lives in a private home directory (nvm, mode 700), the `localthumbs` user can't execute it. In that case run the service as the owning user, but keep the group so the `640 root:localthumbs` env file stays readable:
+
+```
+# sudo systemctl edit localthumbs-cli.service
+[Service]
+User=youruser
+```
+
+…and make the state directory group-writable once: `sudo chmod 2775 /var/lib/localthumbs-cli`. Both survive package upgrades.
 
 ## 🧪 Testing
 `npm test` runs a self-contained end-to-end test: it spins up a mock Nextcloud (WebDAV + API) on a random port, generates a real video with ffmpeg, runs the worker twice and asserts the upload, the cache files and the skip behavior. Needs ffmpeg, no other setup — finishes in a couple of seconds.
@@ -76,6 +92,10 @@ The worker runs as the dedicated `localthumbs` system user with caches under `/v
 -   **Known limitation**: during remote streaming, the basic-auth header is passed to ffmpeg on its command line and is visible in the local process list. Don't run the worker on machines where untrusted users have shell access.
 
 ## 📜 Changelog
+### v1.1.1
+-   **Packaging**: `nodejs` is now a `Recommends` instead of a hard `Depends`, so the `.deb` installs on machines where Node comes from nvm or nodesource. Documented how to run the service as another user and how to change the timer schedule.
+-   Works with the Nextcloud app v1.2.0 (Nextcloud 25–35).
+
 ### v1.1.0
 -   **Multi-account support** via `ACCOUNTS_DIR`, with separate per-account cache files in `CACHE_DIR`.
 -   **Fixed batch check**: the client called `/batch_exists` while the server route is `/batchExists`, so the check always failed and everything was re-processed whenever local caches were missing.

@@ -2,7 +2,7 @@
 set -e
 
 APP_NAME="localthumbs-cli"
-VERSION="1.1.0"
+VERSION="1.1.1"
 BUILD_DIR="packaging/debian"
 PACKAGE_NAME="${APP_NAME}_${VERSION}_all.deb"
 
