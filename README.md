@@ -37,7 +37,7 @@ Your Nextcloud hoster is stingy with CPU cycles? Fine. We'll use your local mach
 | `--env <file>` | Load an alternative `.env` file |
 
 ## 👥 Multiple Nextcloud users
-Create a directory with one env file per account and point `ACCOUNTS_DIR` at it in your global `.env`:
+Create a directory with one env file per account and point `ACCOUNTS_DIR` at it in your global `.env`. A template for the per-account file is in [`accounts/username.env.example`](accounts/username.env.example):
 
 ```
 # .env
