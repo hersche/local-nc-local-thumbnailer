@@ -119,6 +119,11 @@ const RW_TIMEOUT_US = "30000000";             // 30s ffmpeg network stall timeou
 
 const VIDEO_EXTS = [".mp4", ".m4v", ".mov", ".avi", ".mkv", ".wmv"];
 
+// Identify ourselves instead of sending the HTTP libraries' default User-Agent:
+// hosters' front proxies rate-limit generic ones like "node-fetch" (503 after a
+// handful of WebDAV requests on Hetzner Storage Share).
+const USER_AGENT = `localthumbs-cli/${JSON.parse(fs.readFileSync(new URL("./package.json", import.meta.url), "utf-8")).version}`;
+
 console.log(`Max Video Size: ${(MAX_SIZE_BYTES / 1024 / 1024).toFixed(0)} MB`);
 
 // --- HELPER: CPU THREADS ---
@@ -231,12 +236,14 @@ function makeAccount(name, cfg) {
             password: cfg.NC_PASS,
             maxBodyLength: Infinity,
             maxContentLength: Infinity,
+            headers: { 'User-Agent': USER_AGENT },
             httpAgent: httpAgent,
             httpsAgent: httpsAgent
         }),
         client: axios.create({
             auth: { username: cfg.NC_USER, password: cfg.NC_PASS },
             headers: {
+                'User-Agent': USER_AGENT,
                 'OCS-APIRequest': 'true',
                 'X-Localthumbs-Secret': cfg.NC_SECRET || ""
             },
