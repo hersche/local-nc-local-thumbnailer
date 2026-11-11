@@ -28,6 +28,8 @@ const state = {
     uploads: 0,
     uploadHadJpeg: false,
     propfindDepth1: 0,
+    searchEnabled: true,
+    searches: 0,
 };
 
 function davEntry(href, isDir, size) {
@@ -39,6 +41,29 @@ ${isDir ? "<d:resourcetype><d:collection/></d:resourcetype>" : `<d:resourcetype/
 
 const server = http.createServer((req, res) => {
     const url = req.url.split("?")[0];
+
+    // WebDAV SEARCH (Nextcloud answers it only at the DAV root)
+    if (req.method === "SEARCH" && url === "/remote.php/dav/") {
+        let body = "";
+        req.on("data", d => body += d);
+        req.on("end", () => {
+            if (!state.searchEnabled) {
+                res.writeHead(405);
+                res.end("search not supported");
+                return;
+            }
+            state.searches++;
+            const offset = parseInt((body.match(/firstresult>(\d+)</) || [])[1] || "0");
+            const entries = offset === 0 ? [
+                davEntry("/remote.php/dav/files/alice/test.mp4", false, videoStat.size),
+                // TypeScript file that Nextcloud labels video/MP2T — must be ignored
+                davEntry("/remote.php/dav/files/alice/app/node_modules/pkg/index.d.mts", false, 1234),
+            ] : [];
+            res.writeHead(207, { "Content-Type": "application/xml" });
+            res.end(`<?xml version="1.0"?>\n<d:multistatus xmlns:d="DAV:">\n${entries.join("\n")}\n</d:multistatus>`);
+        });
+        return;
+    }
 
     if (req.method === "PROPFIND") {
         const depth = req.headers.depth;
@@ -152,21 +177,39 @@ server.listen(0, "127.0.0.1", async () => {
     let failed = false;
 
     try {
+        // Search mode: videos are found with WebDAV SEARCH, no folder listing
         const run1 = await runWorker();
         assert.strictEqual(run1.status, 0, "run 1: worker should exit 0");
+        assert.match(run1.stdout, /Search found 1 videos/, "run 1: search finds the video and ignores node_modules");
+        assert.strictEqual(state.propfindDepth1, 0, "run 1: no folder listing in search mode");
         assert.strictEqual(state.uploads, 1, "run 1: exactly one thumbnail upload");
         assert.ok(state.uploadHadJpeg, "run 1: upload contains JPEG data");
         assert.match(run1.stdout, /Uploaded: 1/, "run 1: reports one upload");
 
         const thumbCache = fs.readFileSync(path.join(work, "cache", "alice.thumb_cache.csv"), "utf-8");
         assert.ok(thumbCache.includes("/test.mp4"), "thumb cache records the file");
-        const folderCache = JSON.parse(fs.readFileSync(path.join(work, "cache", "alice.folder_cache.json"), "utf-8"));
-        assert.ok(folderCache["/"], "folder cache has an entry for /");
 
         const run2 = await runWorker();
         assert.strictEqual(run2.status, 0, "run 2: worker should exit 0");
         assert.strictEqual(state.uploads, 1, "run 2: no re-upload");
-        assert.strictEqual(state.propfindDepth1, 1, "run 2: folder cache skips the rescan");
+        assert.match(run2.stdout, /Skipped \(Cache\):\s+1/, "run 2: thumb cache skips the video");
+
+        // Fallback: a server without SEARCH gets the folder walk
+        state.searchEnabled = false;
+        fs.rmSync(path.join(work, "cache"), { recursive: true, force: true });
+
+        const run3 = await runWorker();
+        assert.strictEqual(run3.status, 0, "run 3: worker should exit 0");
+        assert.match(run3.stderr, /scanning every folder/, "run 3: falls back to the folder walk");
+        assert.strictEqual(state.propfindDepth1, 1, "run 3: lists the folder");
+        assert.strictEqual(state.uploads, 1, "run 3: server-side exists check prevents a re-upload");
+        assert.match(run3.stdout, /Skipped \(Exists\):\s+1/, "run 3: reports the existing thumbnail");
+        const folderCache = JSON.parse(fs.readFileSync(path.join(work, "cache", "alice.folder_cache.json"), "utf-8"));
+        assert.ok(folderCache["/"], "folder cache has an entry for /");
+
+        const run4 = await runWorker();
+        assert.strictEqual(run4.status, 0, "run 4: worker should exit 0");
+        assert.strictEqual(state.propfindDepth1, 1, "run 4: folder cache skips the rescan");
 
         console.log("PASS: e2e test succeeded");
     } catch (e) {

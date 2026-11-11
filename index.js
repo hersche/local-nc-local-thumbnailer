@@ -73,7 +73,7 @@ Paths (single-account mode):
 }
 
 const envPath = resolve(process.cwd(), values.env);
-const envResult = dotenv.config({ path: envPath });
+const envResult = dotenv.config({ path: envPath, quiet: true });
 
 if (envResult.error) {
     console.error(`[✘] Failed to load env file: ${envPath}`);
@@ -117,7 +117,13 @@ const API_TIMEOUT_MS = 60 * 1000;             // HTTP API requests
 const FFMPEG_KILL_TIMEOUT_MS = 5 * 60 * 1000; // Hard kill for hung ffmpeg/ffprobe processes
 const RW_TIMEOUT_US = "30000000";             // 30s ffmpeg network stall timeout (microseconds)
 
-const VIDEO_EXTS = [".mp4", ".m4v", ".mov", ".avi", ".mkv", ".wmv"];
+const VIDEO_EXTS = [".mp4", ".m4v", ".mov", ".avi", ".mkv", ".wmv", ".mts", ".m2ts", ".mpg", ".mpeg", ".3gp", ".webm"];
+
+// node_modules never holds user videos, but it is full of TypeScript ".mts"
+// files that Nextcloud labels video/MP2T. Skip it entirely.
+const SKIP_DIRS = ["node_modules"];
+const inSkippedDir = (relPath) => relPath.split("/").some(part => SKIP_DIRS.includes(part));
+const isVideo = (relPath) => VIDEO_EXTS.includes(path.extname(relPath).toLowerCase()) && !inSkippedDir(relPath);
 
 // Identify ourselves instead of sending the HTTP libraries' default User-Agent:
 // hosters' front proxies rate-limit generic ones like "node-fetch" (503 after a
@@ -236,6 +242,14 @@ function makeAccount(name, cfg) {
             password: cfg.NC_PASS,
             maxBodyLength: Infinity,
             maxContentLength: Infinity,
+            headers: { 'User-Agent': USER_AGENT },
+            httpAgent: httpAgent,
+            httpsAgent: httpsAgent
+        }),
+        // Nextcloud only answers WebDAV SEARCH at the DAV root
+        davRoot: createClient(`${NC_ROOT}/remote.php/dav/`, {
+            username: cfg.NC_USER,
+            password: cfg.NC_PASS,
             headers: { 'User-Agent': USER_AGENT },
             httpAgent: httpAgent,
             httpsAgent: httpsAgent
@@ -460,14 +474,14 @@ async function runAccount(acc) {
 
         for (const item of items) {
             if (item.type === "directory") {
+                if (SKIP_DIRS.includes(item.basename)) continue;
                 if (await processFolder(item.filename)) mediaInTree = true;
                 continue;
             }
 
-            const ext = path.extname(item.filename).toLowerCase();
-            if (VIDEO_EXTS.includes(ext)) {
+            const relPath = getRelativePath(acc, item.filename);
+            if (isVideo(relPath)) {
                 mediaInTree = true;
-                const relPath = getRelativePath(acc, item.filename);
 
                 if (!FORCE_MODE) {
                     if (thumbCache.has(relPath)) {
@@ -484,6 +498,22 @@ async function runAccount(acc) {
             }
         }
 
+        const jobPromises = await queueVideos(videosToProcess);
+
+        // Only mark the folder as scanned once all of its queued jobs have settled,
+        // so a crash mid-run doesn't hide unprocessed files behind the folder cache.
+        if (jobPromises.length > 0) {
+            Promise.allSettled(jobPromises).then(() => updateFolderCache(relDir, now, dirStats.lastmod));
+        } else {
+            updateFolderCache(relDir, now, dirStats.lastmod);
+        }
+        return mediaInTree;
+    }
+
+    // Checks which videos already have a thumbnail on the server and queues the
+    // rest for processing. Items: { filename, size }, filename relative to the
+    // account's WebDAV root. Returns the queued job promises.
+    async function queueVideos(videosToProcess) {
         const jobPromises = [];
 
         // Batch existence check
@@ -686,18 +716,78 @@ async function runAccount(acc) {
                 }));
             }
         }
-
-        // Only mark the folder as scanned once all of its queued jobs have settled,
-        // so a crash mid-run doesn't hide unprocessed files behind the folder cache.
-        if (jobPromises.length > 0) {
-            Promise.allSettled(jobPromises).then(() => updateFolderCache(relDir, now, dirStats.lastmod));
-        } else {
-            updateFolderCache(relDir, now, dirStats.lastmod);
-        }
-        return mediaInTree;
+        return jobPromises;
     }
 
-    await processFolder("/");
+    // --- DISCOVERY ---
+
+    // Finds all videos of the account with paged WebDAV SEARCH requests (built
+    // into Nextcloud) instead of listing every folder: a handful of requests
+    // instead of one per folder. Throws if the server can't search; the caller
+    // then falls back to the folder walk.
+    // Newest first, so recent videos get their thumbnails before the archive.
+    async function searchVideos() {
+        const PAGE_SIZE = 500;
+        const xmlEscape = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        // e.g. "/files/alice" for …/remote.php/dav/files/alice/
+        const scope = xmlEscape(acc.DAV_PATH_PREFIX.split("/remote.php/dav")[1].replace(/\/$/, ""));
+        const seen = new Set();
+        const videos = [];
+
+        for (let offset = 0; ; offset += PAGE_SIZE) {
+            const body = `<?xml version="1.0"?>
+<d:searchrequest xmlns:d="DAV:" xmlns:ns="https://github.com/icewind1991/SearchDAV/ns">
+ <d:basicsearch>
+  <d:select><d:prop><d:getcontentlength/><d:getlastmodified/><d:resourcetype/></d:prop></d:select>
+  <d:from><d:scope><d:href>${scope}</d:href><d:depth>infinity</d:depth></d:scope></d:from>
+  <d:where><d:like><d:prop><d:getcontenttype/></d:prop><d:literal>video/%</d:literal></d:like></d:where>
+  <d:orderby><d:order><d:prop><d:getlastmodified/></d:prop><d:descending/></d:order></d:orderby>
+  <d:limit><d:nresults>${PAGE_SIZE}</d:nresults><ns:firstresult>${offset}</ns:firstresult></d:limit>
+ </d:basicsearch>
+</d:searchrequest>`;
+            const { results } = await acc.davRoot.search("", { data: body }); // "" keeps the trailing slash of the DAV root
+
+            let added = 0;
+            for (const f of results) {
+                if (f.type !== "file" || seen.has(f.filename)) continue;
+                seen.add(f.filename);
+                added++;
+                const relPath = getRelativePath(acc, f.filename);
+                // Same filter as the folder walk
+                if (isVideo(relPath)) {
+                    videos.push({ filename: relPath, size: f.size });
+                }
+            }
+            if (results.length < PAGE_SIZE) break;
+            // A server that ignores the offset returns the same page forever
+            if (added === 0) throw new Error("server ignores search paging");
+        }
+        return videos;
+    }
+
+    let videos = null;
+    try {
+        videos = await searchVideos();
+        console.log(`[i] Search found ${videos.length} videos`);
+    } catch (e) {
+        console.warn(`[!] WebDAV search unavailable (${e.message}), scanning every folder instead`);
+    }
+
+    if (videos) {
+        const todo = videos.filter(v => {
+            if (!FORCE_MODE && (thumbCache.has(v.filename) || failCache.has(v.filename))) {
+                stats.skippedCache++;
+                return false;
+            }
+            return true;
+        });
+        // Batch-check in chunks so a single batchExists request stays small
+        for (let i = 0; i < todo.length; i += 200) {
+            await queueVideos(todo.slice(i, i + 200));
+        }
+    } else {
+        await processFolder("/");
+    }
     // Wait for all queued jobs to finish
     while (ioQueue.running > 0 || ioQueue.queue.length > 0 || ffmpegQueue.running > 0 || ffmpegQueue.queue.length > 0) {
         await new Promise(r => setTimeout(r, 1000));
